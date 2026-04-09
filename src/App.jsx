@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Home, FileText, Image as ImageIcon, Settings, Bell, 
-  ChevronLeft, ChevronRight, Plus, X, Camera, Save 
+  ChevronLeft, ChevronRight, Plus, X, Camera, Save, Activity
 } from 'lucide-react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
@@ -67,13 +67,18 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [isOffline, setIsOffline] = useState(false); 
   
-  // 현재 입력 중인 당일 데이터 상태
+  // Google Fit API 통신을 위한 액세스 토큰 상태
+  const [googleToken, setGoogleToken] = useState(null);
+  const [isSyncingSteps, setIsSyncingSteps] = useState(false);
+  
+  // 현재 입력 중인 당일 데이터 상태 (걸음수 steps 포함)
   const [todayLog, setTodayLog] = useState({
     weight: '',
     sleep: { hours: '', condition: 'good' },
     mounjaro: { injected: false, dose: '2.5mg', site: '좌측 복부', memo: '' },
     meals: [],
     exercise: [],
+    steps: '', 
     photos: [],
     sales: ''
   });
@@ -83,19 +88,26 @@ export default function App() {
   const mealFileInputRef = useRef(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  // 구글 로그인 처리
+  // 구글 로그인 처리 (Fit 권한 포함)
   const handleGoogleLogin = async () => {
     if (!auth) return;
     try {
       const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-      showToast('구글 계정으로 연동되었습니다! 🔄');
+      provider.addScope('https://www.googleapis.com/auth/fitness.activity.read');
+      
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential) setGoogleToken(credential.accessToken);
+
+      showToast('구글 계정(Fit 권한 포함)으로 연동되었습니다! 🔄');
     } catch (error) {
       console.error("Google login error:", error);
-      if (error.code === 'auth/unauthorized-domain') {
-        showToast('⚠️ 오류: Firebase 콘솔(인증 > 설정 > 승인된 도메인)에 현재 주소를 추가해주세요.');
+      if (error.message && (error.message.includes('Cross-Origin-Opener-Policy') || error.message.includes('COOP'))) {
+        showToast('⚠️ 미리보기 환경에서는 팝업이 차단됩니다. 크롬 브라우저 새 창에서 localhost로 접속해주세요!');
+      } else if (error.code === 'auth/unauthorized-domain') {
+        showToast('⚠️ 오류: Firebase 콘솔에 현재 주소를 추가해주세요.');
       } else {
-        showToast('로그인을 취소했거나 설정이 필요합니다.');
+        showToast('로그인을 취소했거나 팝업이 차단되었습니다.');
       }
     }
   };
@@ -105,6 +117,7 @@ export default function App() {
     if (!auth) return;
     try {
       await signOut(auth);
+      setGoogleToken(null);
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
         try {
           await signInWithCustomToken(auth, __initial_auth_token);
@@ -117,11 +130,7 @@ export default function App() {
       showToast('로그아웃 되었습니다. 기기 전용 모드로 전환됩니다.');
     } catch (error) {
       console.error("Logout error:", error);
-      if (error?.code?.includes('blocked') || error?.message?.includes('blocked') || error?.code === 'auth/operation-not-allowed') {
-        showToast('⚠️ Firebase 콘솔에서 "익명(Anonymous)" 로그인을 켜주세요!');
-      } else {
-        showToast('로그아웃 처리 중 문제가 발생했습니다.');
-      }
+      showToast('로그아웃 처리 중 문제가 발생했습니다.');
     }
   };
 
@@ -141,10 +150,6 @@ export default function App() {
         }
       } catch (error) {
         console.error("Auth error:", error);
-        if (error?.code?.includes('blocked') || error?.message?.includes('blocked') || error?.code === 'auth/operation-not-allowed') {
-          setToastMessage('⚠️ 설정 필요: Firebase 콘솔(Authentication)에서 "익명" 로그인을 켜주세요!');
-          setTimeout(() => setToastMessage(''), 6000);
-        }
       }
     };
     initAuth();
@@ -168,10 +173,7 @@ export default function App() {
       setLogs(fetchedLogs);
     }, (error) => {
       console.error("Firestore snapshot error:", error);
-      if (error.code === 'unavailable') {
-        setIsOffline(true);
-        showToast('클라우드 연결 지연: 로컬 모드로 전환되었습니다.');
-      }
+      if (error.code === 'unavailable') setIsOffline(true);
     });
 
     return () => unsubscribe();
@@ -187,6 +189,7 @@ export default function App() {
         mounjaro: { injected: logForDate.mounjaro?.injected ?? false, dose: logForDate.mounjaro?.dose ?? '2.5mg', site: logForDate.mounjaro?.site ?? '좌측 복부', memo: logForDate.mounjaro?.memo ?? '' },
         meals: logForDate.meals ?? [],
         exercise: logForDate.exercise ?? [],
+        steps: logForDate.steps ?? '',
         photos: logForDate.photos ?? [],
         sales: logForDate.sales ?? '' 
       });
@@ -197,6 +200,7 @@ export default function App() {
         mounjaro: { injected: false, dose: '2.5mg', site: '좌측 복부', memo: '' },
         meals: [],
         exercise: [],
+        steps: '',
         photos: [],
         sales: ''
       });
@@ -237,15 +241,87 @@ export default function App() {
       showToast('기록이 안전하게 저장되었습니다! 💾');
       setActiveTab('home');
     } catch (error) {
-      console.error("Save error:", error);
-      if (error.code === 'unavailable') {
-        setIsOffline(true);
-        saveLocally();
-        showToast('오프라인 상태: 로컬에 임시 저장되었습니다.');
-        setActiveTab('home');
-      } else {
-        showToast('저장 중 오류가 발생했습니다.');
+      showToast('저장 중 오류가 발생했습니다.');
+    }
+  };
+
+  // ----------------------------------------------------------------------
+  // 👟 Google Fit 걸음수 동기화 로직
+  // ----------------------------------------------------------------------
+  const syncGoogleFitSteps = async () => {
+    setIsSyncingSteps(true);
+    let token = googleToken;
+
+    if (!token) {
+      try {
+        const provider = new GoogleAuthProvider();
+        provider.addScope('https://www.googleapis.com/auth/fitness.activity.read');
+        const result = await signInWithPopup(auth, provider);
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        token = credential?.accessToken;
+        setGoogleToken(token);
+      } catch (err) {
+        if (err.message && (err.message.includes('Cross-Origin-Opener-Policy') || err.message.includes('COOP'))) {
+            showToast('⚠️ 미리보기 환경에서는 팝업이 차단됩니다. 크롬 브라우저 새 창에서 실행해주세요!');
+        } else {
+            showToast('구글 로그인 및 Fit 접근 권한이 필요합니다.');
+        }
+        setIsSyncingSteps(false);
+        return;
       }
+    }
+
+    try {
+      const startOfDay = new Date(currentDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(currentDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const response = await fetch('https://www.googleapis.com/fitness/v1/users/me/dataset:aggregate', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          aggregateBy: [{ dataTypeName: 'com.google.step_count.delta' }],
+          bucketByTime: { durationMillis: 86400000 }, 
+          startTimeMillis: startOfDay.getTime(),
+          endTimeMillis: endOfDay.getTime()
+        })
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+           setGoogleToken(null);
+           throw new Error("TOKEN_EXPIRED");
+        }
+        if (response.status === 403) {
+           throw new Error("FORBIDDEN_API");
+        }
+        throw new Error("API_ERROR");
+      }
+
+      const data = await response.json();
+      const bucket = data.bucket?.[0];
+      const dataset = bucket?.dataset?.[0];
+      const point = dataset?.point?.[0];
+      const steps = point?.value?.[0]?.intVal || 0;
+
+      setTodayLog(prev => ({ ...prev, steps: steps }));
+      showToast(`걸음수 연동 성공! 총 ${steps.toLocaleString()}보 🏃‍♂️`);
+
+    } catch (err) {
+      console.error("Google Fit API Error:", err);
+      if (err.message === "TOKEN_EXPIRED") {
+        showToast('권한이 만료되었습니다. 다시 시도해주세요.');
+      } else if (err.message === "FORBIDDEN_API") {
+        showToast('⚠️ Google Cloud Console에서 Fitness API를 활성화해야 합니다.');
+      } else {
+        showToast('걸음수를 가져오지 못했습니다. 권한 설정 및 네트워크를 확인해주세요.');
+      }
+    } finally {
+      setIsSyncingSteps(false);
     }
   };
 
@@ -296,7 +372,7 @@ export default function App() {
   };
 
   // ----------------------------------------------------------------------
-  // 식단 AI 사진 분석 로직 (안정성 및 재시도 로직 강화)
+  // 🚀 식단 AI 사진 분석 로직 (@google/genai SDK 적용 + 안정성 강화)
   // ----------------------------------------------------------------------
   const analyzeMealPhoto = async (e) => {
     const file = e.target.files[0];
@@ -306,7 +382,6 @@ export default function App() {
     showToast('AI가 음식 사진을 분석하고 있습니다... 🔍');
 
     try {
-      // 1. 이미지 압축을 안전한 비동기(Promise) 방식으로 처리하여 멈춤 현상 방지
       const { base64String, base64Data } = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (event) => {
@@ -333,13 +408,16 @@ export default function App() {
 
       // 🚨 사장님의 API 키
       const apiKey = "AIzaSyBIVnFJeO7oB0Ma1y7qNI8YiaGsJQxWQPk"; 
+      
+      // 최신 SDK 초기화
       const ai = new GoogleGenAI({ apiKey: apiKey });
 
       let response;
       let success = false;
       const retries = 3;
+      let lastError = null;
 
-      // 2. 간헐적인 통신 오류 및 연속 호출 차단(429)을 방지하는 재시도(Retry) 루프
+      // 간헐적 통신 오류 및 속도 제한(429) 대비 재시도 루프
       for (let i = 0; i < retries; i++) {
         try {
           response = await ai.models.generateContent({
@@ -351,26 +429,32 @@ export default function App() {
             config: {
               responseMimeType: "application/json",
               responseSchema: {
-                type: "OBJECT", // Type.OBJECT 대신 안전한 문자열 사용
+                type: Type.OBJECT,
                 properties: {
-                  name: { type: "STRING" },
-                  calories: { type: "INTEGER" }
+                  name: { type: Type.STRING },
+                  calories: { type: Type.INTEGER }
                 }
               }
             }
           });
           success = true;
-          break; // 성공 시 루프 즉시 종료
+          break; 
         } catch (apiError) {
+          lastError = apiError;
           console.warn(`API 호출 실패 (${i + 1}/${retries}):`, apiError);
-          if (i === retries - 1) throw apiError; // 마지막 시도면 에러 던짐
-          await new Promise(res => setTimeout(res, 1500 * (i + 1))); // 지수 백오프 대기 후 재시도
+          // 404(모델 없음), 403(권한 없음) 에러는 재시도하지 않음
+          if (apiError.status === 404 || apiError.status === 403) break; 
+          if (i === retries - 1) break; 
+          await new Promise(res => setTimeout(res, 1500 * (i + 1))); 
         }
       }
 
-      const textResp = response?.text;
-      if (!success || !textResp) throw new Error("분석 결과가 없습니다.");
+      if (!success) throw lastError || new Error("EMPTY_RESPONSE");
+
+      const textResp = response.text;
+      if (!textResp) throw new Error("EMPTY_RESPONSE");
       
+      // 마크다운 잔재 제거 및 파싱
       const cleanedText = textResp.replace(/```json/g, '').replace(/```/g, '').trim();
       const { name, calories } = JSON.parse(cleanedText);
       
@@ -389,15 +473,14 @@ export default function App() {
 
     } catch (err) {
       console.error("AI Analysis Error:", err);
-      if (err.message && err.message.includes("429")) {
+      if (err.status === 429 || (err.message && err.message.includes("429"))) {
         showToast('⚠️ 호출 한도를 초과했습니다. 잠시 후 시도해주세요.');
-      } else if (err.message && (err.message.includes("404") || err.message.includes("not found"))) {
+      } else if (err.status === 404 || (err.message && err.message.includes("404"))) {
         showToast('⚠️ 권한 오류: 해당 모델(gemini-3)을 사용할 수 없는 환경입니다.');
       } else {
         showToast('분석에 실패했습니다. 사진을 다시 올려주세요. 🥲');
       }
     } finally {
-      // 3. 어떤 에러가 나더라도 입력창과 로딩 상태를 무조건 초기화하여 무한 정지 방지
       setIsAnalyzing(false);
       if (mealFileInputRef.current) mealFileInputRef.current.value = '';
     }
@@ -457,7 +540,7 @@ export default function App() {
   const currentExeCal = todayLog.exercise.reduce((sum, e) => sum + (Number(e.calories_burned) || 0), 0);
   const isLinkedAccount = user?.providerData?.some(p => p.providerId === 'google.com');
 
-  // 식단 및 운동 목록 인라인 수정 핸들러 추가
+  // 식단 및 운동 목록 인라인 수정 핸들러
   const handleUpdateMeal = (id, field, value) => {
     setTodayLog(prev => ({
       ...prev,
@@ -510,9 +593,10 @@ export default function App() {
         
         <div className="col-span-2 bg-white p-5 rounded-2xl shadow-sm border border-teal-50 flex justify-between items-center">
           <div>
-            <p className="text-xs text-slate-500 font-bold mb-1">오늘 매출</p>
-            <p className="text-2xl font-black text-slate-800">
-              {todayLog.sales ? Number(todayLog.sales).toLocaleString() : '0'}<span className="text-sm font-medium text-slate-500 ml-1">원</span>
+            <p className="text-xs text-slate-500 font-bold mb-1">오늘 매출 & 걸음수</p>
+            <p className="text-2xl font-black text-slate-800 flex items-end gap-3">
+              <span>{todayLog.sales ? Number(todayLog.sales).toLocaleString() : '0'}<span className="text-sm font-medium text-slate-500 ml-1">원</span></span>
+              {todayLog.steps && <span className="text-lg text-blue-600 font-bold">👟 {Number(todayLog.steps).toLocaleString()}<span className="text-xs text-slate-400 ml-1">보</span></span>}
             </p>
           </div>
           <div className="w-12 h-12 bg-teal-50 rounded-full flex items-center justify-center text-2xl shadow-inner">
@@ -539,7 +623,7 @@ export default function App() {
 
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-teal-50">
         <h3 className="font-bold text-slate-800 mb-4 text-lg">주간 체중 트렌드</h3>
-        <div className="h-48 w-full">
+        <div style={{ width: '100%', height: '220px', minHeight: '200px' }}>
           {stats.chartData.length > 0 ? (
              <ResponsiveContainer width="100%" height="100%">
                <LineChart data={stats.chartData}>
@@ -649,7 +733,7 @@ export default function App() {
         )}
       </div>
 
-      {/* 3. 식단 기록 */}
+      {/* 3. 식단 기록 (인라인 수정 기능 유지) */}
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-bold text-slate-800 flex items-center gap-2">
@@ -735,11 +819,39 @@ export default function App() {
         </div>
       </div>
 
-      {/* 4. 운동 기록 */}
+      {/* 4. 운동 및 걸음수 기록 */}
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-          <span className="text-xl">🏃</span> 운동 기록
-        </h3>
+        <div className="flex justify-between items-center mb-4">
+           <h3 className="font-bold text-slate-800 flex items-center gap-2">
+             <span className="text-xl">🏃</span> 운동 기록
+           </h3>
+           <button 
+             onClick={syncGoogleFitSteps}
+             disabled={isSyncingSteps}
+             className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full transition-colors ${isSyncingSteps ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100'}`}
+           >
+             <Activity size={14} />
+             {isSyncingSteps ? '동기화 중...' : 'Fit 걸음수 가져오기'}
+           </button>
+        </div>
+
+        {/* 수동 걸음수 입력 영역 */}
+        <div className="flex items-center justify-between bg-blue-50/50 p-4 rounded-xl border border-blue-100 mb-5">
+           <div className="flex items-center gap-2">
+             <span className="text-2xl">👟</span>
+             <span className="text-slate-700 font-bold">오늘 걸음수</span>
+           </div>
+           <div className="flex items-center gap-2">
+             <input 
+               type="number" 
+               value={todayLog.steps ?? ''}
+               onChange={(e) => setTodayLog({...todayLog, steps: e.target.value})}
+               placeholder="0"
+               className="w-24 text-right bg-white border border-blue-200 rounded-lg p-2 font-bold text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+             />
+             <span className="text-slate-500 font-medium">보</span>
+           </div>
+        </div>
         
         <div className="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide">
           {PRESETS.exercises.map((exe, idx) => (
