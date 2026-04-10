@@ -1,21 +1,18 @@
-// src/firebase.js
-import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+import { initializeApp } from 'firebase/app';
+import { getAuth } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 
-// 환경변수(.env)로 관리하는 것을 권장하지만, 초기 테스트 시에는 직접 입력해도 됩니다.
 const firebaseConfig = {
-  apiKey: "AIzaSyCUnSBNnrbeuuPn-qKgS2X4yqcV1DptV_8",
-  authDomain: "yacksu-kiddo-diet.firebaseapp.com",
-  projectId: "yacksu-kiddo-diet",
-  storageBucket: "yacksu-kiddo-diet.firebasestorage.app",
-  messagingSenderId: "644924497737",
-  appId: "1:644924497737:web:8739fdd72fb10c09e98498"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
-// Firebase 초기화
-const app = initializeApp(firebaseConfig);
-
-// Firestore 및 Storage 인스턴스 내보내기 (다른 컴포넌트에서 사용)
-export const db = getFirestore(app);
-export const storage = getStorage(app);
+export const app = Object.keys(firebaseConfig).length > 0 && firebaseConfig.apiKey ? initializeApp(firebaseConfig) : null;
+export const auth = app ? getAuth(app) : null;
+export const db = app ? getFirestore(app) : null;
+export const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : 'default-app-id';
