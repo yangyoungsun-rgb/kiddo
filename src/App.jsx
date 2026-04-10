@@ -216,7 +216,7 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         
-        const base64String = canvas.toDataURL('image/png');
+        const base64String = canvas.toDataURL('image/jpeg', 0.6);
         const newPhoto = { url: base64String, type: '기본', uploaded_at: new Date().toISOString() };
         const updatedPhotos = [...todayLog.photos, newPhoto];
         setTodayLog(prev => ({ ...prev, photos: updatedPhotos }));
@@ -258,7 +258,7 @@ export default function App() {
             canvas.height = img.height * scaleSize;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            const b64 = canvas.toDataURL('image/jpeg', 0.8);
+            const b64 = canvas.toDataURL('image/jpeg', 0.6);
             resolve({ base64String: b64, base64Data: b64.split(',')[1] });
           };
           img.onerror = () => reject(new Error("이미지 로드 실패"));
